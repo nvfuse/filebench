@@ -150,5 +150,7 @@ void flowop_init(int ismaster);
 /* Local file system specific */
 void fb_lfs_funcvecinit();
 void fb_lfs_newflowops();
+/* nvfuse file system specific */
+void fb_nvfuse_funcvecinit(void);
 
 #endif	/* _FB_FLOWOP_H */

@@ -23,7 +23,17 @@ ACLOCAL_AMFLAGS = -I m4
 AM_YFLAGS = -d
 #AM_LDFLAGS = 
 if GCC_USED
-AM_CFLAGS = -Wall -Wno-unknown-pragmas
+NVFUSE_ROOT_DIR = /home/ysoh/nvfuse
+SPDK_DIR = /home/ysoh/spdk/build/lib
+DPDK_DIR = /home/ysoh/spdk/dpdk-16.11/x86_64-native-linuxapp-gcc/build/lib/
+AM_CFLAGS = -g -Wall -Wno-unknown-pragmas -I$(NVFUSE_ROOT_DIR)/include
+AM_LDFLAGS = $(NVFUSE_ROOT_DIR)/nvfuse.a $(SPDK_DIR)/libspdk_nvme.a $(SPDK_DIR)/libspdk_env_dpdk.a \
+			 $(SPDK_DIR)/libspdk_log.a $(SPDK_DIR)/libspdk_util.a \
+			 $(DPDK_DIR)/librte_ring/librte_ring.a $(DPDK_DIR)/librte_mbuf/librte_mbuf.a \
+			 $(DPDK_DIR)/librte_eal/linuxapp/eal/librte_eal.a \
+			 $(DPDK_DIR)/librte_timer/librte_timer.a \
+			 $(DPDK_DIR)/librte_mempool/librte_mempool.a
+
 endif
 
 DEFS = -D_REENTRANT -DYYDEBUG -DYY_NO_INPUT -DFBDATADIR=\"$(datadir)/filebench\" -D_LARGEFILE64_SOURCE -D_GNU_SOURCE

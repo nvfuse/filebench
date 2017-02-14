@@ -565,7 +565,11 @@ flowop_init(int ismaster)
 	case LOCAL_FS_PLUG:
 		if (ismaster)
 			fb_lfs_newflowops();
+		#if 0
 		fb_lfs_funcvecinit();
+		#else
+		fb_nvfuse_funcvecinit();
+		#endif
 		break;
 	case NFS3_PLUG:
 	case NFS4_PLUG:

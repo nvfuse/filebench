@@ -24,6 +24,9 @@
  *
  * Portions Copyright 2008 Denis Cheng
  */
+/*
+ * NVFUSE support written by JuHyung Son <tooson9010@gmail.com> 
+ */
 
 #include "config.h"
 #include "filebench.h"
@@ -48,6 +51,11 @@
 #ifdef HAVE_AIO
 #include <aio.h>
 #endif /* HAVE_AIO */
+
+#include "nvfuse_core.h"
+#include "nvfuse_api.h"
+#include "nvfuse_io_manager.h"
+#include "nvfuse_malloc.h"
 
 /*
  * These routines implement local file access. They are placed into a
@@ -683,3 +691,286 @@ fb_lfs_access(const char *path, int amode)
 {
 	return (access(path, amode));
 }
+
+#define NVFUSE 1
+#define DEINIT_IOM	1
+#define UMOUNT		1
+
+#if NVFUSE
+
+struct nvfuse_handle *nvh;
+struct nvfuse_io_manager io_manager;
+struct nvfuse_ipc_context ipc_ctx;
+struct nvfuse_params params;
+
+static int fb_nvfuse_freemem(fb_fdesc_t *fd, off64_t size);
+static int fb_nvfuse_open(fb_fdesc_t *, char *, int, int);
+static int fb_nvfuse_pread(fb_fdesc_t *, caddr_t, fbint_t, off64_t);
+static int fb_nvfuse_read(fb_fdesc_t *, caddr_t, fbint_t);
+static int fb_nvfuse_pwrite(fb_fdesc_t *, caddr_t, fbint_t, off64_t);
+static int fb_nvfuse_write(fb_fdesc_t *, caddr_t, fbint_t);
+static int fb_nvfuse_lseek(fb_fdesc_t *, off64_t, int);
+static int fb_nvfuse_truncate(fb_fdesc_t *, off64_t);
+static int fb_nvfuse_rename(const char *, const char *);
+static int fb_nvfuse_close(fb_fdesc_t *);
+static int fb_nvfuse_link(const char *, const char *);
+static int fb_nvfuse_symlink(const char *, const char *);
+static int fb_nvfuse_unlink(char *);
+static ssize_t fb_nvfuse_readlink(const char *, char *, size_t);
+static int fb_nvfuse_mkdir(char *, int);
+static int fb_nvfuse_rmdir(char *);
+static DIR *fb_nvfuse_opendir(char *);
+static struct dirent *fb_nvfuse_readdir(DIR *);
+static int fb_nvfuse_closedir(DIR *);
+static int fb_nvfuse_fsync(fb_fdesc_t *);
+static int fb_nvfuse_stat(char *, struct stat64 *);
+static int fb_nvfuse_fstat(fb_fdesc_t *, struct stat64 *);
+static int fb_nvfuse_access(const char *, int);
+static void fb_nvfuse_recur_rm(char *);
+
+static fsplug_func_t fb_nvfuse_funcs =
+{
+	"locfs",                /* ------- desc ----- imp? --------- link --------- */
+	fb_nvfuse_freemem,		/* flush page cache    x   -> fb_lfs_freemem        */
+	fb_nvfuse_open,		    /* open                o   -> nvfuse_openfile_path  */
+	fb_nvfuse_pread,		/* pread               o   -> nvfuse_readfile       */
+	fb_nvfuse_read,		    /* read                o   -> nvfuse_readfile       */
+	fb_nvfuse_pwrite,		/* pwrite              o   -> nvfuse_writefile      */
+	fb_nvfuse_write,		/* write               o   -> nvfuse_writefile      */
+	fb_nvfuse_lseek,		/* lseek               o   -> nvfuse_lseek          */
+	fb_nvfuse_truncate,	    /* ftruncate           o   -> nvfuse_ftruncate      */
+	fb_nvfuse_rename,		/* rename              o   -> nvfuse_rename_path    */
+	fb_nvfuse_close,		/* close               o   -> nvfuse_closefile      */
+	fb_nvfuse_link,		    /* link                o   -> nvfuse_hardlink_path  */
+	fb_nvfuse_symlink,		/* symlink             o   -> nvfuse_symlink_path   */
+	fb_nvfuse_unlink,		/* unlink              o   -> nvfuse_unlink         */
+	fb_nvfuse_readlink,	    /* readlink            o   -> nvfuse_readlink       */
+	fb_nvfuse_mkdir,		/* mkdir               o   -> nvfuse_mkdir_path     */
+	fb_nvfuse_rmdir,		/* rmdir               o   -> nvfuse_rmdir_path     */
+	fb_nvfuse_opendir,		/* opendir             o   -> FIXME                 */
+	fb_nvfuse_readdir,		/* readdir             x   -> FIXME                 */
+	fb_nvfuse_closedir,	    /* closedir            x   -> FIXME                 */
+	fb_nvfuse_fsync,		/* fsync               o   -> nvfuse_fsyncc         */
+	fb_nvfuse_stat,		    /* stat                o   -> nvfuse_getattr        */
+	fb_nvfuse_fstat,		/* fstat               x   -> FIXME                 */
+	fb_nvfuse_access,		/* access              o   -> nvfuse_access         */
+	fb_nvfuse_recur_rm		/* recursive rm        o   -> fb_lfs_recur_rm       */
+};
+
+void
+fb_nvfuse_funcvecinit(void)
+{
+	int ret;
+	int fd;
+	int count;
+	char *buf;
+	int argc = 5;
+
+	char arg0[] = "test";
+	char arg1[] =  "-c";
+	char arg2[] = "2";
+	char arg3[] = "-a";
+	char arg4[] = "helloworld";
+
+	char *argv[6] = { arg0, arg1, arg2, arg3, arg4, NULL};	
+
+	ret = nvfuse_parse_args(argc, argv, &params);
+	if (ret < 0)
+		return -1;
+	
+	ret = nvfuse_configure_spdk(&io_manager, &ipc_ctx, params.cpu_core_mask, 128);
+	if (ret < 0)
+		return -1;
+
+	/* create nvfuse_handle with user spcified parameters */
+	nvh = nvfuse_create_handle(&io_manager, &ipc_ctx, &params);
+	if (nvh == NULL)
+	{
+		fprintf(stderr, "Error: nvfuse_create_handle()\n");
+		return -1;
+	}
+
+	printf(" %s init .. \n", __FUNCTION__);
+	fs_functions_vec = &fb_nvfuse_funcs;
+}
+
+void fb_nvfuse_funcvecdeinit(void)
+{
+	nvfuse_destroy_handle(nvh, DEINIT_IOM, UMOUNT);
+	nvfuse_deinit_spdk(&io_manager, &ipc_ctx);
+}
+
+static int
+fb_nvfuse_freemem(fb_fdesc_t *fd, off64_t size)
+{
+    off64_t left;
+	int ret = 0;
+
+	for (left = size; left > 0; left -= MMAP_SIZE) {
+		off64_t thismapsize;
+		caddr_t addr;
+
+		thismapsize = MIN(MMAP_SIZE, left);
+		addr = mmap64(0, thismapsize, PROT_READ|PROT_WRITE,
+		    MAP_SHARED, fd->fd_num, size - left);
+		ret += msync(addr, thismapsize, MS_INVALIDATE);
+		(void) munmap(addr, thismapsize);
+	}
+	return (ret);
+}
+
+static int
+fb_nvfuse_pread(fb_fdesc_t *fd, caddr_t iobuf, fbint_t iosize, off64_t fileoffset)
+{    
+    return (nvfuse_readfile(nvh, fd->fd_num, (s8*)iobuf, iosize, fileoffset));
+}
+
+static int
+fb_nvfuse_read(fb_fdesc_t *fd, caddr_t iobuf, fbint_t iosize)
+{
+    return (nvfuse_readfile(nvh, fd->fd_num, iobuf, iosize, 0));
+}
+
+static int
+fb_nvfuse_open(fb_fdesc_t *fd, char *path, int flags, int perms)
+{
+	if ((fd->fd_num = nvfuse_openfile_path(nvh, path, flags, perms)) < 0)
+		return (FILEBENCH_ERROR);
+	else
+		return (FILEBENCH_OK);
+}
+
+static int
+fb_nvfuse_unlink(char *path)
+{
+    return (nvfuse_unlink(nvh,path));
+}
+
+static ssize_t
+fb_nvfuse_readlink(const char *path, char *buf, size_t buf_size)
+{
+    return (nvfuse_readlink(nvh, path, buf, buf_size-1));
+}
+
+static int
+fb_nvfuse_fsync(fb_fdesc_t *fd)
+{
+	return (nvfuse_fsync(nvh,fd->fd_num));
+}
+
+static int
+fb_nvfuse_lseek(fb_fdesc_t *fd, off64_t offset, int whence)
+{
+    return (nvfuse_lseek(nvh, fd->fd_num, offset, whence));
+}
+
+static int
+fb_nvfuse_rename(const char *old, const char *new)
+{
+    return (nvfuse_rename_path(nvh,old, new));
+}
+
+static int
+fb_nvfuse_close(fb_fdesc_t *fd)
+{
+    return (nvfuse_closefile(nvh, fd->fd_num));
+}
+
+static int
+fb_nvfuse_mkdir(char *path, int perm)
+{
+    return (nvfuse_mkdir_path(nvh,path,perm));
+}
+
+static int
+fb_nvfuse_rmdir(char *path)
+{
+    return (nvfuse_rmdir_path(nvh, path));
+}
+
+static void
+fb_nvfuse_recur_rm(char *path)
+{
+	char cmd[MAXPATHLEN];
+
+	(void) snprintf(cmd, sizeof (cmd), "rm -rf %s", path);
+
+	/* We ignore system()'s return value */
+	if (system(cmd));
+	return;
+}
+
+static DIR *fb_nvfuse_opendir(char *path)
+{
+    /*FIXME*/
+//    return (nvfuse_opendir(nvh, path));
+    return NULL;
+}
+
+static struct dirent *fb_nvfuse_readdir(DIR *dirp)
+{
+
+    /*FIXME*/
+//	return (readdir(dirp));
+    return NULL;
+}
+
+static int fb_nvfuse_closedir(DIR *dirp)
+{
+    /*FIXME*/
+//	return (closedir(dirp));
+    return 0;
+}
+
+static int
+fb_nvfuse_fstat(fb_fdesc_t *fd, struct stat64 *statbufp)
+{
+    /*FIXME*/
+    return 0;
+
+
+}
+
+static int
+fb_nvfuse_stat(char *path, struct stat64 *statbufp)
+{
+    return (nvfuse_getattr(nvh, path, statbufp));
+}
+
+static int
+fb_nvfuse_pwrite(fb_fdesc_t *fd, caddr_t iobuf, fbint_t iosize, off64_t offset)
+{
+    return (nvfuse_writefile(nvh, fd->fd_num, iobuf, iosize,offset));
+}
+
+static int
+fb_nvfuse_write(fb_fdesc_t *fd, caddr_t iobuf, fbint_t iosize)
+{
+    return (nvfuse_writefile(nvh, fd->fd_num, iobuf, iosize,0));
+}
+
+static int
+fb_nvfuse_truncate(fb_fdesc_t *fd, off64_t fse_size)
+{
+    return (nvfuse_ftruncate(nvh, fd->fd_num, fse_size));
+}
+
+static int
+fb_nvfuse_link(const char *existing, const char *new)
+{
+    return (nvfuse_hardlink_path(nvh, existing,new));
+}
+
+static int
+fb_nvfuse_symlink(const char *existing, const char *new)
+{
+    return (nvfuse_symlink_path(nvh, existing,new));
+}
+
+static int
+fb_nvfuse_access(const char *path, int amode)
+{
+    return (nvfuse_access(nvh, path, amode));
+}
+
+#endif
