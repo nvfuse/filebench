@@ -23,12 +23,22 @@ ACLOCAL_AMFLAGS = -I m4
 AM_YFLAGS = -d
 #AM_LDFLAGS = 
 if GCC_USED
-NVFUSE_ROOT_DIR = /home/ysoh/nvfuse
-SPDK_DIR = /home/ysoh/spdk/build/lib
-DPDK_DIR = /home/ysoh/spdk/dpdk-16.11/x86_64-native-linuxapp-gcc/build/lib/
+NVFUSE_ROOT_DIR = /home/son/nvfuse/nvfuse_tmp/nvfuse
+SPDK_ROOT_DIR = /home/son/nvfuse/spdk
+DPDK_DIR = /home/son/nvfuse/dpdk-16.11/x86_64-native-linuxapp-gcc/build/lib
+
+SPDK_LIB_LIST = nvme event log util
+
+include $(SPDK_ROOT_DIR)/mk/spdk.common.mk
+include $(SPDK_ROOT_DIR)/mk/spdk.app.mk
+include $(SPDK_ROOT_DIR)/lib/env_dpdk/env.mk
+
+LIBS += $(SPDK_LIB_LINKER_ARGS) $(ENV_LINKER_ARGS)
+SPDK_CFLAGS = $(DPDK_INC) -I$(SPDK_ROOT_DIR)/include -DSPDK_ENABLED
+
 AM_CFLAGS = -g -Wall -Wno-unknown-pragmas -I$(NVFUSE_ROOT_DIR)/include
-AM_LDFLAGS = $(NVFUSE_ROOT_DIR)/nvfuse.a $(SPDK_DIR)/libspdk_nvme.a $(SPDK_DIR)/libspdk_env_dpdk.a \
-			 $(SPDK_DIR)/libspdk_log.a $(SPDK_DIR)/libspdk_util.a \
+AM_LDFLAGS = $(NVFUSE_ROOT_DIR)/nvfuse.a $(SPDK_ROOT_DIR)/build/lib/libspdk_nvme.a $(SPDK_ROOT_DIR)/build/lib/libspdk_env_dpdk.a \
+			 $(SPDK_ROOT_DIR)/build/lib/libspdk_log.a $(SPDK_ROOT_DIR)/build/lib/libspdk_util.a \
 			 $(DPDK_DIR)/librte_ring/librte_ring.a $(DPDK_DIR)/librte_mbuf/librte_mbuf.a \
 			 $(DPDK_DIR)/librte_eal/linuxapp/eal/librte_eal.a \
 			 $(DPDK_DIR)/librte_timer/librte_timer.a \
